@@ -162,7 +162,22 @@ function charts(d){if(!d.length)return;const L=d.map(x=>x.t.slice(5,16));
  cP.data.labels=L;cP.data.datasets[0].data=d.map(x=>x.c);cP.update();
  cA.data.labels=L;cA.data.datasets[0].data=d.map(x=>x.adx);cA.data.datasets[1].data=d.map(x=>x.pdi);cA.data.datasets[2].data=d.map(x=>x.mdi);cA.update()}
 async function load(){let st;try{st=await (await fetch("/api/status")).json()}catch(e){return}
- if(!built)buildSettings(st);
+ const API_BASE = window.location.origin.startsWith("http")
+  ? ""
+  : "http://localhost:8000"; // change to your backend port
+
+async function loadCreds() {
+  const res = await fetch(`${API_BASE}/api/credentials`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function checkStatus() {
+  const res = await fetch(`${API_BASE}/api/status`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+if(!built)buildSettings(st);
  pill("pMode",st.live?"LIVE – REAL ORDERS":"PAPER",st.live?"live":"");pill("pBot",st.running?"BOT RUNNING":"BOT OFF",st.running?"on":"");
  pill("pKotak",st.kotak_logged_in?"KOTAK: CONNECTED":"KOTAK: OFF",st.kotak_logged_in?"on":"");pill("pMkt",st.market_open?"MARKET OPEN":"MARKET CLOSED",st.market_open?"on":"");
  $("pTime").textContent=st.server_time;
