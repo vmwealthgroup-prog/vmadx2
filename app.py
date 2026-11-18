@@ -90,6 +90,43 @@ def squareoff():
     return trader.exit_position("Manual square-off")
 
 
+CRED_KEYS = {"consumer_key": "KOTAK_CONSUMER_KEY", "mobile_number": "KOTAK_MOBILE_NUMBER",
+             "ucc": "KOTAK_UCC", "mpin": "KOTAK_MPIN"}
+
+
+def _mask(v: str, keep: int = 4) -> str:
+    return "" if not v else ("*" * max(len(v) - keep, 0)) + v[-keep:]
+
+
+@app.get("/api/credentials")
+def get_credentials():
+    k = config.KOTAK
+    return {"consumer_key": _mask(k["consumer_key"]), "mobile_number": "" if "X" in k["mobile_number"] else k["mobile_number"],
+            "ucc": k["ucc"], "mpin_set": bool(k["mpin"]), "consumer_key_set": bool(k["consumer_key"])}
+
+
+@app.post("/api/credentials")
+def save_credentials(body: dict = Body(...)):
+    new = {}
+    for field, env_key in CRED_KEYS.items():
+        v = str(body.get(field, "")).strip()
+        if not v or "*" in v:  # blank or masked value = keep existing
+            continue
+        if any(ch in v for ch in "\r\n"):
+            return {"ok": False, "message": f"Invalid {field}"}
+        if field == "mobile_number" and not v.startswith("+"):
+            v = "+91" + v.lstrip("0")
+        if field == "mpin" and not (v.isdigit() and len(v) in (4, 6)):
+            return {"ok": False, "message": "MPIN must be 4 or 6 digits"}
+        new[env_key] = v
+        config.KOTAK[field] = v
+    if not new:
+        return {"ok": False, "message": "Nothing to save"}
+    config.save_env(new)
+    trader.kotak.cfg = config.KOTAK
+    return {"ok": True, "message": "Kotak credentials saved to .env - now enter TOTP and Login"}
+
+
 @app.get("/api/kotak/positions")
 def kotak_positions():
     try:

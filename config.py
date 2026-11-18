@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(ENV_PATH)
 
 
 def env(key: str, default: str = "") -> str:
@@ -55,3 +56,22 @@ DEFAULT_SETTINGS = {
     "limit_buffer_pct": 2.0,    # buy at LTP+2%, sell at LTP-2% (still fills like market, caps slippage)
     "paper_delta": 0.5,         # paper P&L estimate = underlying move * delta
 }
+
+
+def save_env(values: dict) -> None:
+    """Update/append KEY=value lines in .env, keeping every other line as-is."""
+    lines = []
+    if os.path.exists(ENV_PATH):
+        with open(ENV_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    done = set()
+    for i, line in enumerate(lines):
+        key = line.split("=", 1)[0].strip()
+        if key in values and not line.lstrip().startswith("#"):
+            lines[i] = f"{key}={values[key]}"
+            done.add(key)
+    lines += [f"{k}={v}" for k, v in values.items() if k not in done]
+    with open(ENV_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    for k, v in values.items():
+        os.environ[k] = v
