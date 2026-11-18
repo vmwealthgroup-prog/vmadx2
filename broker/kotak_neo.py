@@ -34,6 +34,58 @@ class KotakNeo:
         self.client = None
         self.logged_in = False
         self.last_error = ""
+        self._data_client = None
+        self._data_key = None
+        self._sym_cache = {}
+
+    # ---------- market data (needs only consumer key, no TOTP) ----------
+    def data_client(self):
+        key = self.cfg.get("consumer_key", "")
+        if not key:
+            raise RuntimeError("KOTAK_CONSUMER_KEY not set (save it in the dashboard)")
+        if self.client and self.logged_in:
+            return self.client
+        if self._data_client is None or self._data_key != key:
+            from neo_api_client import NeoAPI
+            self._data_client = NeoAPI(environment=self.cfg.get("environment", "prod"), access_token=None,
+                                       neo_fin_key=None, consumer_key=key)
+            self._data_key = key
+        return self._data_client
+
+    def index_ltp(self, name: str) -> float | None:
+        resp = self.data_client().quotes(instrument_tokens=[{"instrument_token": name, "exchange_segment": "nse_cm"}],
+                                         quote_type="ltp")
+        rows = _rows(resp) or ([resp] if isinstance(resp, dict) else [])
+        for r in rows:
+            v = _first(r, "ltp", "iv", "lp")
+            if v not in (None, ""):
+                return float(v)
+        raise RuntimeError(f"Kotak quote failed for {name}: {str(resp)[:200]}")
+
+    KOTAK_INTERVAL = {"1m": ("1min", 5), "5m": ("5min", 20), "15m": ("15min", 45),
+                      "30m": ("30min", 80), "60m": ("60min", 80), "1d": ("D", 170)}
+
+    def candles(self, und: dict, interval: str):
+        """Index OHLC candles from Kotak historical API -> DataFrame(open, high, low, close) in IST."""
+        import pandas as pd
+        kint, days = self.KOTAK_INTERVAL.get(interval, ("5min", 20))
+        today = dt.date.today()
+        frm, to = (today - dt.timedelta(days=days)).isoformat(), today.isoformat()
+        cands = [self._sym_cache[und["kotak"]]] if und["kotak"] in self._sym_cache else \
+            [f"nse_cm|{t}" for t in und.get("ktok", [])] + [f"nse_cm|{und['kotak']}"]
+        last = None
+        for sym in cands:
+            resp = self.data_client().historical_data(neosymbol=sym, interval=kint, from_date=frm, to_date=to)
+            rows = (resp.get("data") or {}).get("candles") if isinstance(resp, dict) and isinstance(resp.get("data"), dict) else None
+            if rows:
+                df = pd.DataFrame([r[:5] for r in rows], columns=["t", "open", "high", "low", "close"])
+                df.index = pd.to_datetime(df.pop("t"), utc=True).dt.tz_convert("Asia/Kolkata")
+                df = df.astype(float).sort_index()
+                df = df[~df.index.duplicated(keep="last")]
+                self._sym_cache[und["kotak"]] = sym
+                return df
+            last = resp
+        raise RuntimeError(f"Kotak candles failed for {und['kotak']}: {str(last)[:250]}")
 
     # ---------- auth ----------
     def login(self, totp: str = "") -> dict:
@@ -132,24 +184,22 @@ class KotakNeo:
 
     # ---------- orders ----------
     def place(self, trading_symbol: str, qty: int, side: str, price: float | None = None, tag="vmadx2") -> dict:
-        """side = 'B' or 'S'. MIS intraday on nse_fo. price=None -> market order, else limit order."""
+        """side = 'B' or 'S'. MIS intraday LIMIT order on nse_fo (SEBI: no market orders for retail algos)."""
         self._need()
-        is_limit = bool(price and price > 0)
+        if not (price and price > 0):
+            raise RuntimeError("Limit price required - market orders are not allowed for retail algo trading")
         resp = self.client.place_order(
             exchange_segment="nse_fo", product="MIS",
-            price=f"{price:.2f}" if is_limit else "0",
-            order_type="L" if is_limit else "MKT",
+            price=f"{price:.2f}",
+            order_type="L",
             quantity=str(int(qty)), validity="DAY", trading_symbol=trading_symbol,
             transaction_type=side, amo="NO", disclosed_quantity="0", trigger_price="0", tag=tag,
         )
-        log.info("place_order %s %s x%s @ %s -> %s", side, trading_symbol, qty, price or "MKT", resp)
+        log.info("place_order %s %s x%s @ %s -> %s", side, trading_symbol, qty, price, resp)
         order_no = _first(resp if isinstance(resp, dict) else {}, "nOrdNo", "order_id", "orderId")
         if not order_no:
             raise RuntimeError(f"Order rejected/unknown response: {str(resp)[:300]}")
         return {"order_no": str(order_no), "raw": resp}
-
-    def market_order(self, trading_symbol: str, qty: int, side: str, **_):
-        return self.place(trading_symbol, qty, side, None)
 
     def cancel(self, order_no: str) -> dict:
         self._need()

@@ -24,14 +24,16 @@ PORT = int(env("PORT", "8000"))
 
 # Underlyings supported. yf = Yahoo symbol used for candles, step = strike gap.
 UNDERLYINGS = {
-    "NIFTY": {"yf": "^NSEI", "step": 50, "lot": 65},
-    "BANKNIFTY": {"yf": "^NSEBANK", "step": 100, "lot": 30},
-    "FINNIFTY": {"yf": "NIFTY_FIN_SERVICE.NS", "step": 50, "lot": 60},
+    # kotak = index name for Kotak quotes; ktok = numeric index tokens tried for Kotak candles
+    "NIFTY": {"yf": "^NSEI", "kotak": "Nifty 50", "ktok": ["26000"], "step": 50, "lot": 65},
+    "BANKNIFTY": {"yf": "^NSEBANK", "kotak": "Nifty Bank", "ktok": ["26009"], "step": 100, "lot": 30},
+    "FINNIFTY": {"yf": "NIFTY_FIN_SERVICE.NS", "kotak": "Nifty Fin Service", "ktok": ["26037"], "step": 50, "lot": 60},
 }
 
 DEFAULT_SETTINGS = {
     "underlying": "NIFTY",
     "timeframe": "5m",          # 1m, 5m, 15m, 30m, 60m
+    "data_source": "KOTAK",     # KOTAK (real-time, needs consumer key) or YAHOO (free, ~1 min delay)
     "di_length": 14,
     "adx_length": 14,
     "atr_length": 14,
@@ -52,10 +54,15 @@ DEFAULT_SETTINGS = {
     "no_new_entry_after": "14:45",
     "square_off_time": "15:15",
     "poll_seconds": 20,
-    "order_type": "LIMIT",      # LIMIT = LTP +/- buffer (safer), MARKET = plain market order
-    "limit_buffer_pct": 2.0,    # buy at LTP+2%, sell at LTP-2% (still fills like market, caps slippage)
+    # SEBI: market orders are NOT allowed for retail algo trading -> always LIMIT at LTP +/- buffer
+    "limit_buffer_pct": 2.0,    # buy at LTP+2%, sell at LTP-2%; exit retries widen to 4% then 8%
     "paper_delta": 0.5,         # paper P&L estimate = underlying move * delta
 }
+
+
+def _q(v: str) -> str:
+    """Quote values that dotenv could mis-read (spaces, #, quotes)."""
+    return f"'{v}'" if any(ch in v for ch in " #\"'") and "'" not in v else v
 
 
 def save_env(values: dict) -> None:
@@ -68,10 +75,12 @@ def save_env(values: dict) -> None:
     for i, line in enumerate(lines):
         key = line.split("=", 1)[0].strip()
         if key in values and not line.lstrip().startswith("#"):
-            lines[i] = f"{key}={values[key]}"
+            lines[i] = f"{key}={_q(values[key])}"
             done.add(key)
-    lines += [f"{k}={v}" for k, v in values.items() if k not in done]
+    lines += [f"{k}={_q(v)}" for k, v in values.items() if k not in done]
     with open(ENV_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     for k, v in values.items():
         os.environ[k] = v
+
+APP_VERSION = "2026.11.18-3"

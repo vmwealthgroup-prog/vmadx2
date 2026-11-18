@@ -9,9 +9,6 @@ class PaperBroker:
     def place(self, trading_symbol: str, qty: int, side: str, price=None, **_):
         return {"order_no": f"PAPER-{next(_ids)}", "raw": {"paper": True}}
 
-    def market_order(self, trading_symbol: str, qty: int, side: str, **_):
-        return self.place(trading_symbol, qty, side)
-
     def cancel(self, order_no: str):
         return {"paper": True}
 

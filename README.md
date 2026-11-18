@@ -83,3 +83,14 @@ pip install pytest && python -m pytest -q
 - The PC must stay on and awake during market hours.
 
 Options can lose 100% of premium. This is a tool, not financial advice. Paper-trade first.
+
+## Real-time Kotak data (v2026.11.18-3)
+
+- Candles come from **Kotak Neo `historical_data`** and live index LTP from **Kotak `quotes`**. Only `KOTAK_CONSUMER_KEY` is needed for data (no TOTP). If Kotak fails, the bot falls back to Yahoo (delayed) and the **DATA** pill in the header shows `YAHOO (delayed)` plus the reason.
+- Click **Test Kotak data** under the credentials form to check: it shows the Nifty LTP and candle count.
+- **After every `git pull` close the old server window (Ctrl+C) and run `run_windows.bat` again.** An old server keeps the old code; the page will warn you "server is old version".
+
+## Order rules (Kotak / SEBI 2026)
+
+- **No market orders** for retail algo trading. All entries/exits are LIMIT orders at LTP ± `limit_buffer_pct`; unfilled exits retry with a wider buffer (max 20%).
+- **Static IP is mandatory** for order APIs since 1 Apr 2026. Whitelist your IP in Kotak Neo and log in from that same IP: https://www.kotakneo.com/platform/kotak-neo-trade-api/static-ip-details/ . A home connection with a changing IP will get orders rejected; a VPS with a fixed IP is recommended.

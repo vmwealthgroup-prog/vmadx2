@@ -40,6 +40,7 @@ canvas{max-height:260px}
   <div class="pills">
     <span id="pMode" class="pill">PAPER</span><span id="pBot" class="pill">BOT OFF</span>
     <span id="pKotak" class="pill">KOTAK: OFF</span><span id="pMkt" class="pill">MARKET</span>
+    <span id="pData" class="pill">DATA: -</span><span id="pSpot" class="pill">SPOT: -</span>
     <span id="pTime" class="pill mut">--</span>
   </div>
 </header>
@@ -122,30 +123,34 @@ canvas{max-height:260px}
       <div><label>KOTAK_UCC (client code)</label><input id="c_ucc" placeholder="your_client_code" autocomplete="off"></div>
       <div><label>KOTAK_MPIN</label><input id="c_mpin" type="password" placeholder="your_mpin" maxlength="6" autocomplete="new-password"></div>
     </div>
-    <div class="row" style="margin-top:10px"><button class="bb" onclick="saveCreds()">Save credentials</button>
+    <div class="row" style="margin-top:10px"><button class="bb" onclick="saveCreds()">Save credentials</button><button onclick="api('test_kotak')">Test Kotak data</button>
       <span class="mut" id="credState" style="font-size:12px"></span></div>
   </section>
 </main>
 <div id="toast"></div>
 <script>
-const FIELDS=[["underlying","Underlying","sel"],["timeframe","Timeframe","tf"],["adx_threshold","ADX min"],["adx_exit_zone","ADX max (exhaustion)"],
+const FIELDS=[["underlying","Underlying","sel"],["timeframe","Timeframe","tf"],["data_source","Data source","ds"],["adx_threshold","ADX min"],["adx_exit_zone","ADX max (exhaustion)"],
 ["adx_rise_bars","ADX rising bars"],["cross_window","Cross window (bars)"],["di_length","DI length"],["adx_length","ADX smoothing"],["atr_length","ATR length"],
 ["tsl_activation_atr","TSL activate (×ATR)"],["tsl_distance_atr","TSL distance (×ATR)"],["exit_on_di_reverse","Exit on DI reverse","bool"],
 ["lots","Lots"],["lot_size","Lot size"],["strike_offset","Strike offset (0=ATM,-1=ITM)"],["expiry","Expiry DDMMMYYYY (blank=nearest)"],
 ["max_trades_per_day","Max trades/day"],["max_daily_loss","Max daily loss ₹"],["trade_start","Entry from"],["no_new_entry_after","No entry after"],
-["square_off_time","Square-off time"],["poll_seconds","Poll seconds"],["order_type","Order type","ot"],["limit_buffer_pct","Limit buffer %"],["paper_delta","Paper delta est."]];
+["square_off_time","Square-off time"],["poll_seconds","Poll seconds"],["limit_buffer_pct","Limit buffer % (no market orders)"],["paper_delta","Paper delta est."]];
 let built=false,S={},cP,cA;
 const $=id=>document.getElementById(id);
 const fmt=(v,d=2)=>v==null||v===""?"-":Number(v).toFixed(d);
 function toast(m,bad){const t=$("toast");t.textContent=m;t.style.background=bad?"#da3633":"#1f6feb";t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",4000)}
-async function api(p,body){const r=await fetch("/api/"+p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});const j=await r.json();toast(j.message||"OK",j.ok===false);load();return j}
+const PAGE_VERSION="2026.11.18-3";
+async function api(p,body){let j;try{const r=await fetch("/api/"+p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+ if(!r.ok){j={ok:false,message:`Server error ${r.status} on /api/${p}. Close the black server window and run run_windows.bat again (old server still running).`}}else j=await r.json()}
+ catch(e){j={ok:false,message:"Server not reachable - is run_windows.bat running?"}}
+ toast(j.message||"OK",j.ok===false);load();return j}
 function login(){api("login",{totp:$("totp").value});$("totp").value=""}
 function goLive(){const c=prompt("REAL MONEY ORDERS will be placed in your Kotak account.\nType LIVE to confirm:");if(c)api("live",{enable:true,confirm:c})}
 async function kotak(w){const j=await (await fetch("/api/kotak/"+w)).json();$("kotakCard").style.display="block";$("kotakTitle").textContent="Kotak "+w;$("kotakData").textContent=j.ok?JSON.stringify(j.data,null,1):j.message}
 function buildSettings(st){const g=$("setGrid");g.innerHTML="";FIELDS.forEach(([k,l,t])=>{let h;
  if(t==="sel")h=`<select id="s_${k}">${st.underlyings.map(u=>`<option>${u}</option>`).join("")}</select>`;
  else if(t==="tf")h=`<select id="s_${k}">${["1m","5m","15m","30m","60m","1d"].map(u=>`<option>${u}</option>`).join("")}</select>`;
- else if(t==="ot")h=`<select id="s_${k}"><option>LIMIT</option><option>MARKET</option></select>`;
+ else if(t==="ds")h=`<select id="s_${k}"><option value="KOTAK">KOTAK (real-time)</option><option value="YAHOO">YAHOO (delayed)</option></select>`;
  else if(t==="bool")h=`<select id="s_${k}"><option value="true">Yes</option><option value="false">No</option></select>`;
  else h=`<input id="s_${k}">`;g.insertAdjacentHTML("beforeend",`<div><label>${l}</label>${h}</div>`)});
  FIELDS.forEach(([k])=>$("s_"+k).value=String(st.settings[k]));built=true}
@@ -161,6 +166,10 @@ async function load(){let st;try{st=await (await fetch("/api/status")).json()}ca
  pill("pMode",st.live?"LIVE – REAL ORDERS":"PAPER",st.live?"live":"");pill("pBot",st.running?"BOT RUNNING":"BOT OFF",st.running?"on":"");
  pill("pKotak",st.kotak_logged_in?"KOTAK: CONNECTED":"KOTAK: OFF",st.kotak_logged_in?"on":"");pill("pMkt",st.market_open?"MARKET OPEN":"MARKET CLOSED",st.market_open?"on":"");
  $("pTime").textContent=st.server_time;
+ pill("pData","DATA: "+(st.data_source||"-"),st.data_source==="KOTAK"?"on":"");
+ $("pSpot").textContent=st.spot?`${st.settings.underlying} ${Number(st.spot).toLocaleString("en-IN",{minimumFractionDigits:2})} @ ${st.spot_time}`:"SPOT: -";
+ if(st.version!==PAGE_VERSION)st.last_error="Server is an OLD version - close the server window and run run_windows.bat again. "+(st.last_error||"");
+ if(st.data_note)st.last_error=(st.last_error||"")+" "+st.data_note;
  const p=$("kPnl");p.textContent=fmt(st.day_pnl);p.className=st.day_pnl>=0?"pos":"neg";$("kTr").textContent=st.day_trades;
  $("kTick").textContent=st.last_tick||"--";$("kHalt").textContent=st.halted_reason||"—";
  $("errBox").innerHTML=(st.last_error||st.kotak_error)?`<div class="warnbox">${st.last_error||""} ${st.kotak_error||""}</div>`:"";
@@ -175,10 +184,10 @@ async function load(){let st;try{st=await (await fetch("/api/status")).json()}ca
  $("trades").innerHTML=st.trades.map(t=>`<tr><td>${t.mode}</td><td class="${t.side}">${t.side}</td><td>${t.symbol}</td><td>${t.qty}</td><td>${t.entry_time.slice(11)}</td><td>${t.exit_time.slice(11)}</td><td>${fmt(t.entry_underlying)}→${fmt(t.exit_underlying)}</td><td class="${t.pnl>=0?"pos":"neg"}">${fmt(t.pnl)}</td><td>${t.reason}</td></tr>`).join("")||`<tr><td colspan=9 class="mut">No trades yet</td></tr>`;
  $("events").innerHTML=st.events.map(e=>`<div class="ev-${e.level}">${e.t} ${e.msg}</div>`).join("")||"<span class='mut'>No events</span>";
  const ch=await (await fetch("/api/chart")).json();charts(ch)}
-async function loadCreds(){const c=await (await fetch("/api/credentials")).json();
+async function loadCreds(){const r=await fetch("/api/credentials");if(!r.ok){$("credState").innerHTML="<b class='neg'>Server is old - close the server window and run run_windows.bat again.</b>";return}const c=await r.json();
  $("c_consumer_key").value=c.consumer_key;$("c_mobile_number").value=c.mobile_number;$("c_ucc").value=c.ucc;$("c_mpin").value="";
  $("c_mpin").placeholder=c.mpin_set?"MPIN saved (type to change)":"your_mpin";
- $("credState").textContent=(c.consumer_key_set&&c.mpin_set&&c.ucc&&c.mobile_number)?"All credentials saved. Enter TOTP above and click Login.":"Fill all 4 fields and save."}
+ $("credState").textContent=(c.consumer_key_set&&c.mpin_set&&c.ucc&&c.mobile_number)?"✓ All 4 saved in .env (key and MPIN hidden for safety). Enter TOTP above and click Login.":"Fill all 4 fields and click Save."}
 async function saveCreds(){const b={};["consumer_key","mobile_number","ucc","mpin"].forEach(k=>b[k]=$("c_"+k).value.trim());
  const j=await api("credentials",b);if(j.ok)loadCreds()}
 loadCreds();load();setInterval(load,5000);

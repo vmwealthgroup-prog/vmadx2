@@ -49,6 +49,11 @@ class Trader:
         self.halted_reason = ""
         self.last_error = ""
         self.last_tick = None
+        self.data_source = "-"
+        self.data_note = ""
+        self.spot = None
+        self.spot_time = None
+        self._spot_ts = 0.0
 
     # ---------------- helpers ----------------
     def event(self, msg: str, level: str = "info"):
@@ -132,10 +137,38 @@ class Trader:
                     break
                 time.sleep(1)
 
-    def refresh_data(self):
+    def _candles(self):
         s = self.settings
         und = config.UNDERLYINGS[s["underlying"]]
-        df = closed_only(get_candles(und["yf"], s["timeframe"]), s["timeframe"])
+        if s["data_source"].upper() == "KOTAK":
+            try:
+                df = self.kotak.candles(und, s["timeframe"])
+                self.data_source, self.data_note = "KOTAK", ""
+                return df
+            except Exception as e:  # noqa: BLE001
+                self.data_note = f"Kotak data failed, using Yahoo: {e}"
+                log.warning(self.data_note)
+        df = get_candles(und["yf"], s["timeframe"])
+        self.data_source = "YAHOO (delayed)"
+        return df
+
+    def update_spot(self, force: bool = False):
+        """Live index LTP from Kotak quotes (throttled to one call per 3 s)."""
+        if not force and time.time() - self._spot_ts < 3:
+            return
+        self._spot_ts = time.time()
+        if not self.kotak.cfg.get("consumer_key"):
+            return
+        try:
+            self.spot = self.kotak.index_ltp(config.UNDERLYINGS[self.settings["underlying"]]["kotak"])
+            self.spot_time = now_ist().strftime("%H:%M:%S")
+        except Exception as e:  # noqa: BLE001
+            self.data_note = f"Live quote failed: {e}"
+
+    def refresh_data(self):
+        s = self.settings
+        df = closed_only(self._candles(), s["timeframe"])
+        self.update_spot(force=True)
         ev = evaluate(df, s)
         ind = ev.pop("ind")
         tail = ind.tail(150)
@@ -188,15 +221,17 @@ class Trader:
             self.enter_position(ev)
 
     # ---------------- orders ----------------
-    def _execute(self, b, symbol: str, token, qty: int, side: str, force_market: bool = False) -> dict:
-        """Place one order and wait for it. LIMIT mode = LTP +/- buffer; unfilled limit orders are cancelled.
-        Returns {"state": filled|dead|unknown, "order_no", "avg_price", "ltp", "status", "reason"}."""
+    def _execute(self, b, symbol: str, token, qty: int, side: str, widen: float = 1.0) -> dict:
+        """Place one LIMIT order at LTP +/- buffer and wait. (SEBI: no market orders for retail algos.)
+        Unfilled orders are cancelled. Returns {"state": filled|dead|unknown, ...}."""
         s = self.settings
         live = b is self.kotak
         ltp = self.kotak.ltp(token) if (token and self.kotak.logged_in) else None
         price = None
-        if live and not force_market and s["order_type"].upper() == "LIMIT" and ltp:
-            buf = float(s["limit_buffer_pct"]) / 100.0
+        if live:
+            if not ltp:
+                raise RuntimeError(f"No live price for {symbol} - cannot set limit price")
+            buf = min(float(s["limit_buffer_pct"]) * widen, 20.0) / 100.0
             raw = ltp * (1 + buf) if side == "B" else ltp * (1 - buf)
             price = (math.ceil(raw / 0.05) if side == "B" else math.floor(raw / 0.05)) * 0.05
             price = max(round(price, 2), 0.05)
@@ -294,8 +329,8 @@ class Trader:
             b = self.kotak if live_pos else self.paper
             r, filled = {"avg_price": None, "ltp": None}, False
             for attempt in range(3):
-                try:  # 1st try uses the configured order type, retries go MARKET
-                    r = self._execute(b, pos["symbol"], pos.get("token"), pos["qty"], "S", force_market=attempt > 0)
+                try:  # limit at LTP-buffer; each retry widens the buffer (x2, x4)
+                    r = self._execute(b, pos["symbol"], pos.get("token"), pos["qty"], "S", widen=2 ** attempt)
                 except Exception as e:  # noqa: BLE001  (order never accepted -> safe to retry)
                     self.event(f"EXIT ORDER FAILED (attempt {attempt + 1}): {e}", "error")
                     time.sleep(1)
@@ -346,5 +381,7 @@ class Trader:
                 "events": list(self.events)[:80], "day_trades": self.day_trades,
                 "day_pnl": round(self.day_pnl, 2), "halted_reason": self.halted_reason,
                 "last_error": self.last_error, "last_tick": self.last_tick,
-                "market_open": self.market_open(now_ist()), "server_time": now_ist().strftime("%Y-%m-%d %H:%M:%S IST"),
+                "market_open": self.market_open(now_ist()), "data_source": self.data_source,
+                "data_note": self.data_note, "spot": self.spot, "spot_time": self.spot_time,
+                "version": config.APP_VERSION, "server_time": now_ist().strftime("%Y-%m-%d %H:%M:%S IST"),
             }

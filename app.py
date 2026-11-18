@@ -27,6 +27,7 @@ def index():
 
 @app.get("/api/status")
 def status():
+    trader.update_spot()
     return trader.status()
 
 
@@ -121,10 +122,29 @@ def save_credentials(body: dict = Body(...)):
         new[env_key] = v
         config.KOTAK[field] = v
     if not new:
-        return {"ok": False, "message": "Nothing to save"}
-    config.save_env(new)
+        return {"ok": False, "message": "Nothing new to save (fields unchanged)"}
+    try:
+        config.save_env(new)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "message": f"Could not write .env: {e}"}
     trader.kotak.cfg = config.KOTAK
-    return {"ok": True, "message": "Kotak credentials saved to .env - now enter TOTP and Login"}
+    saved = ", ".join(k.replace("KOTAK_", "") for k in new)
+    return {"ok": True, "message": f"Saved to .env: {saved}. Click 'Test Kotak data', then TOTP + Login"}
+
+
+@app.post("/api/test_kotak")
+def test_kotak():
+    und = config.UNDERLYINGS[trader.settings["underlying"]]
+    try:
+        spot = trader.kotak.index_ltp(und["kotak"])
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "message": f"Kotak live quote failed (check consumer key): {e}"}
+    try:
+        df = trader.kotak.candles(und, trader.settings["timeframe"])
+        c = f"{len(df)} candles, last {str(df.index[-1])[:16]}"
+    except Exception as e:  # noqa: BLE001
+        c = f"candles failed: {str(e)[:150]}"
+    return {"ok": True, "message": f"Kotak OK: {und['kotak']} LTP {spot:,.2f} | {c}"}
 
 
 @app.get("/api/kotak/positions")
