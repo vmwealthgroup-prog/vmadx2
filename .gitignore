@@ -1,7 +1,10 @@
 .env
 venv/
+.venv/
 __pycache__/
 *.pyc
-logs/
+logs/*
+!logs/.gitkeep
 *.log
+state.json
 .DS_Store

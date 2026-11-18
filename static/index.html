@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VM ADX2 · Kotak Neo</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--tx:#e6edf3;--mut:#8b949e;--g:#2ea043;--r:#f85149;--b:#58a6ff;--y:#d29922}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid var(--line);background:#010409}
+h1{font-size:18px;margin:0}h1 span{color:var(--mut);font-weight:400;font-size:13px}
+.pills{display:flex;gap:6px;flex-wrap:wrap}.pill{padding:3px 10px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mut)}
+.pill.on{color:#fff;background:var(--g);border-color:var(--g)}.pill.live{background:var(--r);border-color:var(--r);color:#fff;animation:p 1.2s infinite}
+@keyframes p{50%{opacity:.6}}
+main{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;padding:14px 18px;max-width:1500px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:0 0 10px}
+.c3{grid-column:span 3}.c4{grid-column:span 4}.c5{grid-column:span 5}.c6{grid-column:span 6}.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
+@media(max-width:1000px){.c3,.c4,.c5,.c6,.c7,.c8{grid-column:span 12}}
+button{background:#21262d;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer;font-weight:600}
+button:hover{border-color:var(--b)}.bg{background:var(--g);border-color:var(--g)}.br{background:var(--r);border-color:var(--r)}.bb{background:#1f6feb;border-color:#1f6feb}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+input,select{background:#0d1117;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.grid label{font-size:11px;color:var(--mut);display:block}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.kpi{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:8px}
+.kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}.kpi small{color:var(--mut);font-size:11px}
+.sig{font-size:26px;font-weight:800;padding:6px 0}.CE{color:var(--g)}.PE{color:var(--r)}.none{color:var(--mut)}
+table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:600}.scroll{max-height:280px;overflow:auto}
+.pos{color:var(--g)}.neg{color:var(--r)}.mut{color:var(--mut)}.ev-error{color:var(--r)}.ev-warn{color:var(--y)}
+#toast{position:fixed;bottom:18px;right:18px;background:#1f6feb;color:#fff;padding:10px 14px;border-radius:8px;display:none;max-width:380px}
+.warnbox{border:1px solid var(--r);background:#2d1214;color:#ffb3ad;padding:8px 10px;border-radius:8px;font-size:12px;margin-top:8px}
+canvas{max-height:260px}
+</style>
+</head>
+<body>
+<header>
+  <h1>VM ADX2 <span>ADX / DI auto-trader · Kotak Neo</span></h1>
+  <div class="pills">
+    <span id="pMode" class="pill">PAPER</span><span id="pBot" class="pill">BOT OFF</span>
+    <span id="pKotak" class="pill">KOTAK: OFF</span><span id="pMkt" class="pill">MARKET</span>
+    <span id="pTime" class="pill mut">--</span>
+  </div>
+</header>
+<main>
+  <section class="card c4">
+    <h2>Bot control</h2>
+    <div class="row">
+      <button class="bg" onclick="api('start')">▶ Start</button>
+      <button onclick="api('stop')">■ Stop</button>
+      <button onclick="api('refresh')">⟳ Refresh</button>
+      <button class="br" onclick="if(confirm('Square off open position now?'))api('squareoff')">Square off</button>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><small>Day P&amp;L</small><b id="kPnl">0</b></div>
+      <div class="kpi"><small>Trades today</small><b id="kTr">0</b></div>
+      <div class="kpi"><small>Last tick</small><b id="kTick" style="font-size:15px">--</b></div>
+      <div class="kpi"><small>Halt</small><b id="kHalt" style="font-size:12px">—</b></div>
+    </div>
+    <div id="errBox"></div>
+  </section>
+
+  <section class="card c4">
+    <h2>Kotak Neo</h2>
+    <div class="row"><input id="totp" placeholder="6-digit TOTP (blank if secret in .env)" maxlength="6" style="flex:1">
+      <button class="bb" onclick="login()">Login</button><button onclick="api('logout')">Logout</button></div>
+    <div class="row">
+      <button class="br" onclick="goLive()">Enable LIVE</button>
+      <button onclick="api('live',{enable:false})">Paper mode</button>
+      <button onclick="kotak('positions')">Positions</button><button onclick="kotak('orders')">Orders</button>
+    </div>
+    <div id="liveNote" class="warnbox" style="display:none"></div>
+  </section>
+
+  <section class="card c4">
+    <h2>Signal (last closed candle)</h2>
+    <div class="sig none" id="sig">—</div>
+    <div class="mut" id="sigReason">Press Refresh or Start</div>
+    <div class="kpis" style="margin-top:8px">
+      <div class="kpi"><small>ADX</small><b id="vAdx">-</b></div>
+      <div class="kpi"><small>+DI</small><b id="vPdi" class="pos">-</b></div>
+      <div class="kpi"><small>-DI</small><b id="vMdi" class="neg">-</b></div>
+      <div class="kpi"><small>ATR</small><b id="vAtr">-</b></div>
+    </div>
+    <div class="mut" style="margin-top:6px;font-size:12px" id="sigMeta"></div>
+  </section>
+
+  <section class="card c8">
+    <h2>Price &amp; ADX / DI</h2>
+    <canvas id="cPrice"></canvas><canvas id="cAdx" style="margin-top:8px;max-height:170px"></canvas>
+  </section>
+
+  <section class="card c4">
+    <h2>Open position</h2>
+    <div id="posBox" class="mut">No open position</div>
+  </section>
+
+  <section class="card c12">
+    <h2>Strategy settings</h2>
+    <div class="grid" id="setGrid"></div>
+    <div class="row" style="margin-top:10px"><button class="bb" onclick="saveSettings()">Save settings</button>
+      <span class="mut" style="font-size:12px">CE: +DI crosses above −DI · PE: −DI crosses above +DI · ADX between threshold and exhaustion and rising · SL = signal candle low/high · ATR trailing stop</span></div>
+  </section>
+
+  <section class="card c7">
+    <h2>Trades</h2>
+    <div class="scroll"><table><thead><tr><th>Mode</th><th>Side</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Spot in→out</th><th>P&amp;L</th><th>Reason</th></tr></thead><tbody id="trades"></tbody></table></div>
+  </section>
+  <section class="card c5">
+    <h2>Event log</h2>
+    <div class="scroll" id="events" style="font:12px ui-monospace,Consolas,monospace"></div>
+  </section>
+  <section class="card c12" id="kotakCard" style="display:none">
+    <h2 id="kotakTitle">Kotak</h2><div class="scroll"><pre id="kotakData" style="font-size:11px;white-space:pre-wrap"></pre></div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+const FIELDS=[["underlying","Underlying","sel"],["timeframe","Timeframe","tf"],["adx_threshold","ADX min"],["adx_exit_zone","ADX max (exhaustion)"],
+["adx_rise_bars","ADX rising bars"],["cross_window","Cross window (bars)"],["di_length","DI length"],["adx_length","ADX smoothing"],["atr_length","ATR length"],
+["tsl_activation_atr","TSL activate (×ATR)"],["tsl_distance_atr","TSL distance (×ATR)"],["exit_on_di_reverse","Exit on DI reverse","bool"],
+["lots","Lots"],["lot_size","Lot size"],["strike_offset","Strike offset (0=ATM,-1=ITM)"],["expiry","Expiry (blank=nearest)"],
+["max_trades_per_day","Max trades/day"],["max_daily_loss","Max daily loss ₹"],["trade_start","Entry from"],["no_new_entry_after","No entry after"],
+["square_off_time","Square-off time"],["poll_seconds","Poll seconds"],["market_protection","Market protection %"],["paper_delta","Paper delta est."]];
+let built=false,S={},cP,cA;
+const $=id=>document.getElementById(id);
+const fmt=(v,d=2)=>v==null||v===""?"-":Number(v).toFixed(d);
+function toast(m,bad){const t=$("toast");t.textContent=m;t.style.background=bad?"#da3633":"#1f6feb";t.style.display="block";clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",4000)}
+async function api(p,body){const r=await fetch("/api/"+p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});const j=await r.json();toast(j.message||"OK",j.ok===false);load();return j}
+function login(){api("login",{totp:$("totp").value});$("totp").value=""}
+function goLive(){const c=prompt("REAL MONEY ORDERS will be placed in your Kotak account.\nType LIVE to confirm:");if(c)api("live",{enable:true,confirm:c})}
+async function kotak(w){const j=await (await fetch("/api/kotak/"+w)).json();$("kotakCard").style.display="block";$("kotakTitle").textContent="Kotak "+w;$("kotakData").textContent=j.ok?JSON.stringify(j.data,null,1):j.message}
+function buildSettings(st){const g=$("setGrid");g.innerHTML="";FIELDS.forEach(([k,l,t])=>{let h;
+ if(t==="sel")h=`<select id="s_${k}">${st.underlyings.map(u=>`<option>${u}</option>`).join("")}</select>`;
+ else if(t==="tf")h=`<select id="s_${k}">${["1m","5m","15m","30m","60m","1d"].map(u=>`<option>${u}</option>`).join("")}</select>`;
+ else if(t==="bool")h=`<select id="s_${k}"><option value="true">Yes</option><option value="false">No</option></select>`;
+ else h=`<input id="s_${k}">`;g.insertAdjacentHTML("beforeend",`<div><label>${l}</label>${h}</div>`)});
+ FIELDS.forEach(([k])=>$("s_"+k).value=String(st.settings[k]));built=true}
+function saveSettings(){const b={};FIELDS.forEach(([k])=>b[k]=$("s_"+k).value);api("settings",b)}
+function pill(id,txt,cls){const e=$(id);e.textContent=txt;e.className="pill "+(cls||"")}
+function charts(d){if(!d.length)return;const L=d.map(x=>x.t.slice(5,16));
+ if(!cP){cP=new Chart($("cPrice"),{type:"line",data:{labels:L,datasets:[{label:"Close",data:[],borderColor:"#58a6ff",pointRadius:0,borderWidth:1.5}]},options:{animation:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:"#8b949e",maxTicksLimit:8}},y:{ticks:{color:"#8b949e"}}}}});
+  cA=new Chart($("cAdx"),{type:"line",data:{labels:L,datasets:[{label:"ADX",data:[],borderColor:"#d29922",pointRadius:0,borderWidth:2},{label:"+DI",data:[],borderColor:"#2ea043",pointRadius:0,borderWidth:1.3},{label:"-DI",data:[],borderColor:"#f85149",pointRadius:0,borderWidth:1.3}]},options:{animation:false,plugins:{legend:{labels:{color:"#e6edf3",boxWidth:12}}},scales:{x:{ticks:{color:"#8b949e",maxTicksLimit:8}},y:{ticks:{color:"#8b949e"}}}}})}
+ cP.data.labels=L;cP.data.datasets[0].data=d.map(x=>x.c);cP.update();
+ cA.data.labels=L;cA.data.datasets[0].data=d.map(x=>x.adx);cA.data.datasets[1].data=d.map(x=>x.pdi);cA.data.datasets[2].data=d.map(x=>x.mdi);cA.update()}
+async function load(){let st;try{st=await (await fetch("/api/status")).json()}catch(e){return}
+ if(!built)buildSettings(st);
+ pill("pMode",st.live?"LIVE – REAL ORDERS":"PAPER",st.live?"live":"");pill("pBot",st.running?"BOT RUNNING":"BOT OFF",st.running?"on":"");
+ pill("pKotak",st.kotak_logged_in?"KOTAK: CONNECTED":"KOTAK: OFF",st.kotak_logged_in?"on":"");pill("pMkt",st.market_open?"MARKET OPEN":"MARKET CLOSED",st.market_open?"on":"");
+ $("pTime").textContent=st.server_time;
+ const p=$("kPnl");p.textContent=fmt(st.day_pnl);p.className=st.day_pnl>=0?"pos":"neg";$("kTr").textContent=st.day_trades;
+ $("kTick").textContent=st.last_tick||"--";$("kHalt").textContent=st.halted_reason||"—";
+ $("errBox").innerHTML=(st.last_error||st.kotak_error)?`<div class="warnbox">${st.last_error||""} ${st.kotak_error||""}</div>`:"";
+ const n=$("liveNote");if(!st.allow_live){n.style.display="block";n.textContent="Live disabled: set ALLOW_LIVE=true in .env and restart to allow real orders."}else if(st.live){n.style.display="block";n.textContent="LIVE MODE: the bot will place REAL market orders in your Kotak Neo account."}else n.style.display="none";
+ const s=st.signal||{};const sg=$("sig");sg.textContent=s.signal?("BUY "+s.signal):(s.bull_trend==null?"—":(s.bull_trend?"No signal · +DI > −DI":"No signal · −DI > +DI"));sg.className="sig "+(s.signal||"none");
+ $("sigReason").textContent=s.reason||"Press Refresh or Start";$("vAdx").textContent=fmt(s.adx);$("vPdi").textContent=fmt(s.plus_di);$("vMdi").textContent=fmt(s.minus_di);$("vAtr").textContent=fmt(s.atr);
+ $("sigMeta").textContent=s.time?`${st.settings.underlying} ${st.settings.timeframe} · candle ${s.time.slice(0,16)} · close ${fmt(s.price)} · ADX ${s.adx_rising?"rising":"not rising"}`:"";
+ const ps=st.position;$("posBox").innerHTML=ps?`<div class="sig ${ps.side}" style="font-size:20px">${ps.mode} · BUY ${ps.symbol}</div>
+  <table><tr><td>Qty</td><td>${ps.qty}</td></tr><tr><td>Entry time</td><td>${ps.entry_time}</td></tr><tr><td>Entry spot / premium</td><td>${fmt(ps.entry_underlying)} / ${fmt(ps.entry_premium)}</td></tr>
+  <tr><td>LTP spot / premium</td><td>${fmt(ps.ltp_underlying)} / ${fmt(ps.ltp_premium)}</td></tr><tr><td>Stop (on spot)</td><td>${fmt(ps.stop)} ${ps.tsl_active?"<b class='pos'>TSL ON</b>":"(initial)"}</td></tr>
+  <tr><td>P&amp;L ${ps.entry_premium?"":"(est.)"}</td><td class="${ps.pnl>=0?"pos":"neg"}"><b>${fmt(ps.pnl)}</b></td></tr><tr><td>Order no</td><td>${ps.order_no}</td></tr></table>`:"No open position";
+ $("trades").innerHTML=st.trades.map(t=>`<tr><td>${t.mode}</td><td class="${t.side}">${t.side}</td><td>${t.symbol}</td><td>${t.qty}</td><td>${t.entry_time.slice(11)}</td><td>${t.exit_time.slice(11)}</td><td>${fmt(t.entry_underlying)}→${fmt(t.exit_underlying)}</td><td class="${t.pnl>=0?"pos":"neg"}">${fmt(t.pnl)}</td><td>${t.reason}</td></tr>`).join("")||`<tr><td colspan=9 class="mut">No trades yet</td></tr>`;
+ $("events").innerHTML=st.events.map(e=>`<div class="ev-${e.level}">${e.t} ${e.msg}</div>`).join("")||"<span class='mut'>No events</span>";
+ const ch=await (await fetch("/api/chart")).json();charts(ch)}
+load();setInterval(load,5000);
+</script>
+</body>
+</html>

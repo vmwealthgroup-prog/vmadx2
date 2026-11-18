@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pandas>=2.1
+numpy>=1.26
+yfinance>=0.2.40
+python-dotenv>=1.0
+pyotp>=2.9
+# Kotak Neo official SDK v2 (needs git installed)
+neo_api_client @ git+https://github.com/Kotak-Neo/Kotak-neo-api-v2.git@v2.0.2
