@@ -1,106 +1,439 @@
-"""ADX / DMI strategy (Wilder smoothing) -> CE / PE signals on the underlying."""
+"""
+ADX / DMI strategy (Wilder smoothing) -> CE / PE signals on the underlying.
+
+IMPORTANT:
+- Use only completed candles.
+- The caller must remove the currently forming candle before calling evaluate().
+- This module generates signals on the underlying instrument.
+- CE means bullish underlying signal.
+- PE means bearish underlying signal.
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
 
-def wilder(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(alpha=1.0 / period, adjust=False).mean()
+def wilder_smooth(series: pd.Series, period: int) -> pd.Series:
+    """
+    Apply Wilder smoothing.
+
+    Formula:
+        current = previous + (value - previous) / period
+
+    This is equivalent to an EMA with alpha = 1 / period.
+    """
+    values = series.to_numpy(dtype=float)
+    result = np.full(len(values), np.nan)
+
+    start = 0
+    while start < len(values) and np.isnan(values[start]):
+        start += 1
+
+    if start >= len(values):
+        return pd.Series(result, index=series.index)
+
+    result[start] = values[start]
+
+    for i in range(start + 1, len(values)):
+        if np.isnan(values[i]):
+            result[i] = result[i - 1]
+        else:
+            result[i] = result[i - 1] + (values[i] - result[i - 1]) / period
+
+    return pd.Series(result, index=series.index)
 
 
-def compute_indicators(df: pd.DataFrame, di_length=14, adx_length=14, atr_length=14) -> pd.DataFrame:
+def compute_indicators(
+    df: pd.DataFrame,
+    di_length: int = 14,
+    adx_length: int = 14,
+    atr_length: int = 14,
+) -> pd.DataFrame:
+    """
+    Calculate Wilder +DI, -DI, DX, ADX and ATR.
+
+    Required DataFrame columns:
+        high, low, close
+    """
+    if df.empty:
+        raise ValueError("Candle DataFrame is empty")
+
+    required_columns = {"high", "low", "close"}
+    missing_columns = required_columns - set(df.columns)
+
+    if missing_columns:
+        raise ValueError(f"Missing candle columns: {sorted(missing_columns)}")
+
     out = df.copy()
-    high, low, close = out["high"], out["low"], out["close"]
-    up = high.diff()
-    down = -low.diff()
-    plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=out.index)
-    minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=out.index)
-    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
 
-    atr_di = wilder(tr, di_length)
-    plus_di = 100 * wilder(plus_dm, di_length) / atr_di.replace(0, np.nan)
-    minus_di = 100 * wilder(minus_dm, di_length) / atr_di.replace(0, np.nan)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    high = out["high"].astype(float)
+    low = out["low"].astype(float)
+    close = out["close"].astype(float)
 
-    out["ATR"] = wilder(tr, atr_length)
+    previous_high = high.shift(1)
+    previous_low = low.shift(1)
+    previous_close = close.shift(1)
+
+    # Directional Movement
+    up_move = high - previous_high
+    down_move = previous_low - low
+
+    plus_dm = np.where(
+        (up_move > down_move) & (up_move > 0),
+        up_move,
+        0.0,
+    )
+
+    minus_dm = np.where(
+        (down_move > up_move) & (down_move > 0),
+        down_move,
+        0.0,
+    )
+
+    # True Range
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    # Wilder smoothing
+    smoothed_tr = wilder_smooth(true_range, di_length)
+    smoothed_plus_dm = wilder_smooth(
+        pd.Series(plus_dm, index=out.index),
+        di_length,
+    )
+    smoothed_minus_dm = wilder_smooth(
+        pd.Series(minus_dm, index=out.index),
+        di_length,
+    )
+
+    # Directional Indicators
+    plus_di = 100 * smoothed_plus_dm / smoothed_tr.replace(0, np.nan)
+    minus_di = 100 * smoothed_minus_dm / smoothed_tr.replace(0, np.nan)
+
+    # DX
+    di_sum = plus_di + minus_di
+    dx = 100 * (plus_di - minus_di).abs() / di_sum.replace(0, np.nan)
+
+    # ADX with proper Wilder seeding
+    dx_values = dx.to_numpy(dtype=float)
+    adx_values = np.full(len(dx_values), np.nan)
+
+    valid_dx_indices = [
+        index
+        for index, value in enumerate(dx_values)
+        if not np.isnan(value)
+    ]
+
+    if len(valid_dx_indices) >= adx_length:
+        first_valid_index = valid_dx_indices[0]
+
+        first_adx_window = dx_values[
+            first_valid_index : first_valid_index + adx_length
+        ]
+
+        first_adx = float(np.nanmean(first_adx_window))
+        first_adx_index = first_valid_index + adx_length - 1
+
+        adx_values[first_adx_index] = first_adx
+
+        for index in range(first_adx_index + 1, len(dx_values)):
+            if np.isnan(dx_values[index]):
+                adx_values[index] = adx_values[index - 1]
+            else:
+                adx_values[index] = (
+                    (adx_values[index - 1] * (adx_length - 1))
+                    + dx_values[index]
+                ) / adx_length
+
+    # ATR
+    atr = wilder_smooth(true_range, atr_length)
+
+    out["PLUS_DM"] = plus_dm
+    out["MINUS_DM"] = minus_dm
+    out["TRUE_RANGE"] = true_range
+    out["ATR"] = atr
     out["PLUS_DI"] = plus_di
     out["MINUS_DI"] = minus_di
-    out["ADX"] = wilder(dx.fillna(0), adx_length)
+    out["DX"] = dx
+    out["ADX"] = pd.Series(adx_values, index=out.index)
+
     return out
 
 
-def evaluate(df: pd.DataFrame, s: dict) -> dict:
-    """Evaluate the LAST CLOSED candle of df (caller must drop the forming candle)."""
-    ind = compute_indicators(df, int(s["di_length"]), int(s["adx_length"]), int(s["atr_length"]))
-    rise = int(s["adx_rise_bars"])
-    if len(ind) < max(30, rise + 3):
-        return {"signal": None, "reason": "Not enough candles", "ind": ind}
+def evaluate(df: pd.DataFrame, settings: dict) -> dict:
+    """
+    Evaluate the last CLOSED candle and return a CE / PE signal.
 
-    cur = ind.iloc[-1]
-    lo, hi = float(s["adx_threshold"]), float(s["adx_exit_zone"])
-    window = max(1, int(s.get("cross_window", 3)))
-    p, m, a = ind["PLUS_DI"].values, ind["MINUS_DI"].values, ind["ADX"].values
+    The caller must pass only completed candles.
+    """
+    di_length = int(settings.get("di_length", 14))
+    adx_length = int(settings.get("adx_length", 14))
+    atr_length = int(settings.get("atr_length", 14))
+    rise_bars = int(settings.get("adx_rise_bars", 2))
+    cross_window = int(settings.get("cross_window", 3))
 
-    def qualifies(j):  # ADX inside band and rising `rise` bars at index j
-        return lo < a[j] < hi and all(a[j - i] > a[j - i - 1] for i in range(rise))
+    adx_threshold = float(settings.get("adx_threshold", 20))
+    adx_exit_zone = float(settings.get("adx_exit_zone", 35))
 
-    n = len(ind) - 1
-    bull = p[n] > m[n]
-    # bars since the most recent DI crossover (alignment flip)
-    k = 0
-    while k < n - 1 and (p[n - k] > m[n - k]) == bull and (p[n - k - 1] > m[n - k - 1]) == bull:
-        k += 1
-    crossed_recently = (p[n - k - 1] > m[n - k - 1]) != bull and k < window
-    adx = float(a[n])
-    adx_rising = all(a[n - i] > a[n - i - 1] for i in range(rise))
-    side = "CE" if bull else "PE"
+    indicators = compute_indicators(
+        df,
+        di_length=di_length,
+        adx_length=adx_length,
+        atr_length=atr_length,
+    )
 
-    signal, reason = None, f"No fresh DI crossover (last cross {k} bars ago)" if not crossed_recently else ""
+    minimum_candles = max(
+        30,
+        rise_bars + 3,
+        cross_window + 2,
+    )
+
+    if len(indicators) < minimum_candles:
+        return {
+            "signal": None,
+            "reason": "Not enough candles",
+            "cross_id": None,
+            "cross_time": None,
+            "time": str(indicators.index[-1]) if len(indicators) else None,
+            "price": None,
+            "high": None,
+            "low": None,
+            "adx": None,
+            "plus_di": None,
+            "minus_di": None,
+            "atr": None,
+            "adx_rising": False,
+            "bull_trend": False,
+            "bars_since_cross": None,
+            "indicators": indicators,
+        }
+
+    current_candle = indicators.iloc[-1]
+
+    plus_di = indicators["PLUS_DI"].to_numpy(dtype=float)
+    minus_di = indicators["MINUS_DI"].to_numpy(dtype=float)
+    adx = indicators["ADX"].to_numpy(dtype=float)
+
+    latest_index = len(indicators) - 1
+
+    latest_adx = float(adx[latest_index])
+    latest_plus_di = float(plus_di[latest_index])
+    latest_minus_di = float(minus_di[latest_index])
+    latest_atr = float(current_candle["ATR"])
+    latest_close = float(current_candle["close"])
+
+    bull_trend = latest_plus_di > latest_minus_di
+    side = "CE" if bull_trend else "PE"
+
+    # Find bars since the most recent DI alignment change.
+    bars_since_cross = 0
+
+    while (
+        bars_since_cross < latest_index
+        and (
+            plus_di[latest_index - bars_since_cross]
+            > minus_di[latest_index - bars_since_cross]
+        ) == bull_trend
+        and (
+            plus_di[latest_index - bars_since_cross - 1]
+            > minus_di[latest_index - bars_since_cross - 1]
+        ) == bull_trend
+    ):
+        bars_since_cross += 1
+
+    crossed_recently = (
+        bars_since_cross < cross_window
+        and (
+            plus_di[latest_index - bars_since_cross - 1]
+            > minus_di[latest_index - bars_since_cross - 1]
+        ) != bull_trend
+    )
+
+    cross_index = (
+        latest_index - bars_since_cross - 1
+        if crossed_recently
+        else None
+    )
+
+    cross_time = (
+        indicators.index[cross_index]
+        if cross_index is not None
+        else None
+    )
+
+    cross_id = str(cross_time) if cross_time is not None else None
+
+    def adx_qualified(index: int) -> bool:
+        if index < rise_bars:
+            return False
+
+        rising = all(
+            adx[index - i] > adx[index - i - 1]
+            for i in range(1, rise_bars + 1)
+        )
+
+        return (
+            adx[index] >= adx_threshold
+            and adx[index] < adx_exit_zone
+            and rising
+        )
+
+    signal = None
+    reason = "No fresh DI crossover"
+
     if crossed_recently:
-        already = any(qualifies(n - j) for j in range(1, k + 1))  # fired earlier in this window
-        if already:
+        already_signalled = any(
+            adx_qualified(latest_index - offset)
+            for offset in range(1, bars_since_cross + 1)
+        )
+
+        if already_signalled:
             reason = f"{side} already signalled for this crossover"
-        elif not (lo < adx < hi):
-            reason = f"{side} cross: waiting, ADX {adx:.1f} outside {lo:g}-{hi:g}"
-        elif not adx_rising:
-            reason = f"{side} cross: waiting for ADX rising {rise} bars"
+
+        elif latest_adx < adx_threshold:
+            reason = (
+                f"{side} cross waiting: ADX {latest_adx:.2f} "
+                f"is below {adx_threshold:g}"
+            )
+
+        elif latest_adx >= adx_exit_zone:
+            reason = (
+                f"{side} cross rejected: ADX {latest_adx:.2f} "
+                f"is at or above {adx_exit_zone:g}"
+            )
+
+        elif not adx_qualified(latest_index):
+            reason = (
+                f"{side} cross waiting: ADX {latest_adx:.2f} "
+                f"is not rising for {rise_bars} bars"
+            )
+
         else:
             signal = side
-            reason = ("+DI above -DI" if bull else "-DI above +DI") + f" (cross {k} bars ago), ADX {adx:.1f} rising"
+            reason = (
+                ("+DI above -DI" if bull_trend else "-DI above +DI")
+                + f"; crossover {bars_since_cross} bars ago; "
+                + f"ADX {latest_adx:.2f} rising"
+            )
 
     return {
         "signal": signal,
         "reason": reason,
-        "time": str(ind.index[-1]),
-        "price": round(float(cur["close"]), 2),
-        "high": float(cur["high"]),
-        "low": float(cur["low"]),
-        "adx": round(adx, 2),
-        "plus_di": round(float(cur["PLUS_DI"]), 2),
-        "minus_di": round(float(cur["MINUS_DI"]), 2),
-        "atr": round(float(cur["ATR"]), 2),
-        "adx_rising": bool(adx_rising),
-        "bull_trend": bool(bull),
-        "bars_since_cross": int(k),
-        "ind": ind,
+        "cross_id": cross_id,
+        "cross_time": str(cross_time) if cross_time is not None else None,
+        "time": str(indicators.index[-1]),
+        "price": round(latest_close, 2),
+        "high": float(current_candle["high"]),
+        "low": float(current_candle["low"]),
+        "adx": round(latest_adx, 2),
+        "plus_di": round(latest_plus_di, 2),
+        "minus_di": round(latest_minus_di, 2),
+        "atr": round(latest_atr, 2),
+        "adx_rising": bool(
+            all(
+                adx[latest_index - i] > adx[latest_index - i - 1]
+                for i in range(1, rise_bars + 1)
+            )
+        ),
+        "bull_trend": bool(bull_trend),
+        "bars_since_cross": int(bars_since_cross),
+        "indicators": indicators,
     }
 
 
-def update_trailing_stop(pos: dict, high: float, low: float, atr: float, s: dict) -> dict:
-    """Update stop for a long-CE (direction=+1) or long-PE (direction=-1) position, tracked on the underlying."""
-    act = float(s["tsl_activation_atr"]) * atr
-    dist = float(s["tsl_distance_atr"]) * atr
-    if pos["side"] == "CE":
-        pos["best"] = max(pos["best"], high)
-        if pos["best"] - pos["entry_underlying"] >= act:
-            pos["tsl_active"] = True
-            pos["stop"] = max(pos["stop"], pos["best"] - dist)
+def update_trailing_stop(
+    position: dict,
+    high: float,
+    low: float,
+    atr: float,
+    settings: dict,
+) -> dict:
+    """
+    Update trailing stop using a COMPLETED candle.
+
+    CE is treated as a long underlying position.
+    PE is treated as a short underlying position.
+
+    The caller should update the stop using the previous completed candle,
+    then check the current candle for a stop hit.
+    """
+    activation_distance = float(settings["tsl_activation_atr"]) * atr
+    trailing_distance = float(settings["tsl_distance_atr"]) * atr
+
+    if position["side"] == "CE":
+        position["best_price"] = max(
+            position["best_price"],
+            high,
+        )
+
+        favourable_move = (
+            position["best_price"] - position["entry_underlying"]
+        )
+
+        if favourable_move >= activation_distance:
+            position["tsl_active"] = True
+
+            new_stop = position["best_price"] - trailing_distance
+            position["stop"] = max(position["stop"], new_stop)
+
     else:
-        pos["best"] = min(pos["best"], low)
-        if pos["entry_underlying"] - pos["best"] >= act:
-            pos["tsl_active"] = True
-            pos["stop"] = min(pos["stop"], pos["best"] + dist)
-    return pos
+        position["best_price"] = min(
+            position["best_price"],
+            low,
+        )
+
+        favourable_move = (
+            position["entry_underlying"] - position["best_price"]
+        )
+
+        if favourable_move >= activation_distance:
+            position["tsl_active"] = True
+
+            new_stop = position["best_price"] + trailing_distance
+            position["stop"] = min(position["stop"], new_stop)
+
+    return position
 
 
-def stop_hit(pos: dict, high: float, low: float) -> bool:
-    return low <= pos["stop"] if pos["side"] == "CE" else high >= pos["stop"]
+def stop_hit(position: dict, high: float, low: float) -> bool:
+    """Check whether the current candle hit the trailing stop."""
+    if position["side"] == "CE":
+        return low <= position["stop"]
+
+    return high >= position["stop"]
+
+
+def get_gap_aware_exit_price(
+    position: dict,
+    open_price: float,
+    high: float,
+    low: float,
+) -> float | None:
+    """
+    Return a realistic exit price if the trailing stop was hit.
+
+    If price gaps beyond the stop, use the open price instead of assuming
+    that the stop price was filled.
+    """
+    stop = position["stop"]
+
+    if position["side"] == "CE":
+        if low <= stop:
+            if open_price < stop:
+                return open_price
+            return stop
+
+    else:
+        if high >= stop:
+            if open_price > stop:
+                return open_price
+            return stop
+
+    return None
