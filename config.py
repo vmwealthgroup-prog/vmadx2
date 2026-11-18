@@ -44,13 +44,14 @@ DEFAULT_SETTINGS = {
     "lots": 1,
     "lot_size": 65,             # verified against Kotak scrip data when live
     "strike_offset": 0,         # 0 = ATM, -1 = 1 strike ITM, +1 = 1 strike OTM
-    "expiry": "",               # blank = nearest returned by Kotak search
+    "expiry": "",               # blank = nearest; or DDMMMYYYY e.g. 25NOV2026
     "max_trades_per_day": 3,
     "max_daily_loss": 3000.0,   # rupees; bot stops new entries after this
     "trade_start": "09:30",
     "no_new_entry_after": "14:45",
     "square_off_time": "15:15",
     "poll_seconds": 20,
-    "market_protection": "10",
+    "order_type": "LIMIT",      # LIMIT = LTP +/- buffer (safer), MARKET = plain market order
+    "limit_buffer_pct": 2.0,    # buy at LTP+2%, sell at LTP-2% (still fills like market, caps slippage)
     "paper_delta": 0.5,         # paper P&L estimate = underlying move * delta
 }

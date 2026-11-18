@@ -120,9 +120,9 @@ canvas{max-height:260px}
 const FIELDS=[["underlying","Underlying","sel"],["timeframe","Timeframe","tf"],["adx_threshold","ADX min"],["adx_exit_zone","ADX max (exhaustion)"],
 ["adx_rise_bars","ADX rising bars"],["cross_window","Cross window (bars)"],["di_length","DI length"],["adx_length","ADX smoothing"],["atr_length","ATR length"],
 ["tsl_activation_atr","TSL activate (×ATR)"],["tsl_distance_atr","TSL distance (×ATR)"],["exit_on_di_reverse","Exit on DI reverse","bool"],
-["lots","Lots"],["lot_size","Lot size"],["strike_offset","Strike offset (0=ATM,-1=ITM)"],["expiry","Expiry (blank=nearest)"],
+["lots","Lots"],["lot_size","Lot size"],["strike_offset","Strike offset (0=ATM,-1=ITM)"],["expiry","Expiry DDMMMYYYY (blank=nearest)"],
 ["max_trades_per_day","Max trades/day"],["max_daily_loss","Max daily loss ₹"],["trade_start","Entry from"],["no_new_entry_after","No entry after"],
-["square_off_time","Square-off time"],["poll_seconds","Poll seconds"],["market_protection","Market protection %"],["paper_delta","Paper delta est."]];
+["square_off_time","Square-off time"],["poll_seconds","Poll seconds"],["order_type","Order type","ot"],["limit_buffer_pct","Limit buffer %"],["paper_delta","Paper delta est."]];
 let built=false,S={},cP,cA;
 const $=id=>document.getElementById(id);
 const fmt=(v,d=2)=>v==null||v===""?"-":Number(v).toFixed(d);
@@ -134,6 +134,7 @@ async function kotak(w){const j=await (await fetch("/api/kotak/"+w)).json();$("k
 function buildSettings(st){const g=$("setGrid");g.innerHTML="";FIELDS.forEach(([k,l,t])=>{let h;
  if(t==="sel")h=`<select id="s_${k}">${st.underlyings.map(u=>`<option>${u}</option>`).join("")}</select>`;
  else if(t==="tf")h=`<select id="s_${k}">${["1m","5m","15m","30m","60m","1d"].map(u=>`<option>${u}</option>`).join("")}</select>`;
+ else if(t==="ot")h=`<select id="s_${k}"><option>LIMIT</option><option>MARKET</option></select>`;
  else if(t==="bool")h=`<select id="s_${k}"><option value="true">Yes</option><option value="false">No</option></select>`;
  else h=`<input id="s_${k}">`;g.insertAdjacentHTML("beforeend",`<div><label>${l}</label>${h}</div>`)});
  FIELDS.forEach(([k])=>$("s_"+k).value=String(st.settings[k]));built=true}

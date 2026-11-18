@@ -1,9 +1,10 @@
 """Thin, defensive wrapper around the official Kotak Neo SDK v2 (neo_api_client).
 
-Docs: https://github.com/Kotak-Neo/Kotak-neo-api-v2
+SDK: pip install kotakneoapi  (https://github.com/Kotak-Neo/kotak-neo-python)
 Kotak response field names can change between SDK versions, so every parser below
 tries several keys and logs the raw response when it cannot understand it.
 """
+import datetime as dt
 import logging
 import time
 
@@ -39,7 +40,7 @@ class KotakNeo:
         try:
             from neo_api_client import NeoAPI
         except ImportError:
-            return self._fail("neo_api_client not installed. Run: pip install -r requirements.txt")
+            return self._fail("Kotak SDK not installed. Run: pip install kotakneoapi")
         c = self.cfg
         if not (c["consumer_key"] and c["mobile_number"] and c["ucc"] and c["mpin"]):
             return self._fail("Fill KOTAK_CONSUMER_KEY, KOTAK_MOBILE_NUMBER, KOTAK_UCC, KOTAK_MPIN in .env")
@@ -93,16 +94,21 @@ class KotakNeo:
         if not rows:
             raise RuntimeError(f"No option found for {underlying} {strike} {opt_type} {expiry}: {str(resp)[:300]}")
 
-        def exp_key(r):
-            v = _first(r, "pExpiryDate", "lExpiryDate", "expiry", default=0)
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return float("inf")
+        today = dt.date.today()
 
-        # keep only exact underlying (search may also return e.g. NIFTYNXT50)
+        def exp_date(r):
+            v = str(_first(r, "pExpiryDate", "expiry", default=""))
+            for fmt in ("%d%b%Y", "%d%B%Y", "%Y-%m-%d"):
+                try:
+                    return dt.datetime.strptime(v.title(), fmt).date()
+                except ValueError:
+                    pass
+            return dt.date.max
+
+        # keep only exact underlying (search may also return e.g. NIFTYNXT50) and non-expired contracts
         exact = [r for r in rows if str(_first(r, "pSymbolName", "pSymbol_name", "symbol", default=underlying)).upper() == underlying.upper()]
-        r = sorted(exact or rows, key=exp_key)[0]
+        live = [r for r in (exact or rows) if exp_date(r) >= today]
+        r = sorted(live or exact or rows, key=exp_date)[0]
         return {
             "trading_symbol": _first(r, "pTrdSymbol", "trading_symbol", "pTrdSymbolName"),
             "token": str(_first(r, "pSymbol", "instrument_token", "tok", default="")),
@@ -125,20 +131,31 @@ class KotakNeo:
         return None
 
     # ---------- orders ----------
-    def market_order(self, trading_symbol: str, qty: int, side: str, protection: str = "10", tag="vmadx2") -> dict:
-        """side = 'B' or 'S'. MIS intraday market order on nse_fo."""
+    def place(self, trading_symbol: str, qty: int, side: str, price: float | None = None, tag="vmadx2") -> dict:
+        """side = 'B' or 'S'. MIS intraday on nse_fo. price=None -> market order, else limit order."""
         self._need()
+        is_limit = bool(price and price > 0)
         resp = self.client.place_order(
-            exchange_segment="nse_fo", product="MIS", price="0", order_type="MKT",
-            quantity=str(qty), validity="DAY", trading_symbol=trading_symbol,
-            transaction_type=side, amo="NO", disclosed_quantity="0",
-            market_protection=str(protection), pf="N", trigger_price="0", tag=tag,
+            exchange_segment="nse_fo", product="MIS",
+            price=f"{price:.2f}" if is_limit else "0",
+            order_type="L" if is_limit else "MKT",
+            quantity=str(int(qty)), validity="DAY", trading_symbol=trading_symbol,
+            transaction_type=side, amo="NO", disclosed_quantity="0", trigger_price="0", tag=tag,
         )
-        log.info("place_order %s %s x%s -> %s", side, trading_symbol, qty, resp)
+        log.info("place_order %s %s x%s @ %s -> %s", side, trading_symbol, qty, price or "MKT", resp)
         order_no = _first(resp if isinstance(resp, dict) else {}, "nOrdNo", "order_id", "orderId")
         if not order_no:
             raise RuntimeError(f"Order rejected/unknown response: {str(resp)[:300]}")
         return {"order_no": str(order_no), "raw": resp}
+
+    def market_order(self, trading_symbol: str, qty: int, side: str, **_):
+        return self.place(trading_symbol, qty, side, None)
+
+    def cancel(self, order_no: str) -> dict:
+        self._need()
+        resp = self.client.cancel_order(order_id=str(order_no))
+        log.info("cancel_order %s -> %s", order_no, resp)
+        return resp if isinstance(resp, dict) else {"raw": resp}
 
     def order_status(self, order_no: str, wait_seconds: float = 6.0) -> dict:
         """Poll order book until the order is complete/rejected or timeout."""

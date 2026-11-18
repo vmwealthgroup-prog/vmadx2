@@ -9,7 +9,7 @@ One-page dashboard and auto-trading bot. It reads NIFTY / BANKNIFTY / FINNIFTY c
 |---|---|---|
 | Trigger | +DI crosses above −DI | −DI crosses above +DI |
 | Filter | ADX between 20 and 35 **and** rising 2 candles, within 3 candles of the cross | same |
-| Order | BUY ATM CE (MIS, market) | BUY ATM PE (MIS, market) |
+| Order | BUY ATM CE (MIS, limit at LTP+2%) | BUY ATM PE (MIS, limit at LTP+2%) |
 | Initial SL | signal candle low (on spot) | signal candle high (on spot) |
 | Trailing SL | after +1×ATR move, trail 2×ATR from best price | same, mirrored |
 | Other exits | opposite DI cross, 15:15 square-off, manual Square off | same |
@@ -44,7 +44,7 @@ python app.py
 | `KOTAK_MPIN` | Your 6-digit MPIN |
 | `KOTAK_TOTP_SECRET` | Optional. Base32 secret shown when registering TOTP; lets the bot generate the TOTP. Otherwise type the TOTP in the dashboard. |
 
-SDK: official [Kotak-Neo/Kotak-neo-api-v2](https://github.com/Kotak-Neo/Kotak-neo-api-v2) (`neo_api_client`), installed automatically from `requirements.txt`.
+SDK: official `kotakneoapi` from PyPI ([Kotak-Neo/kotak-neo-python](https://github.com/Kotak-Neo/kotak-neo-python)), installed automatically from `requirements.txt`. The old `Kotak-neo-api-v2` GitHub package is archived and blocked by GitHub, so it is no longer used. If you installed it earlier, run `pip uninstall neo-api-client` first.
 
 ## Dashboard
 - Status pills: Paper/LIVE, bot on/off, Kotak connected, market open
@@ -68,6 +68,7 @@ pip install pytest && python -m pytest -q
 ```
 
 ## Safety design
+- Default order type is **LIMIT at LTP ± buffer** (2%): fills like a market order but caps slippage. The new Kotak SDK always sends market protection = 0, so plain MARKET orders are riskier. Unfilled limit orders are cancelled: an unfilled entry is skipped, an unfilled exit is retried as MARKET.
 - Live exits retry only if the sell order was **rejected or never accepted**. If status is pending/unknown it never sends a second sell (prevents an accidental short); the bot stops and tells you to square off in the Kotak app.
 - Live entry is aborted if the Kotak option lookup fails.
 - Can't switch modes while a position is open.
@@ -76,7 +77,7 @@ pip install pytest && python -m pytest -q
 
 ## Known limitations — read before going live
 - **Candle feed is Yahoo Finance** (free, may lag ~1 minute). The stop is checked on closed candles, so a fast move can go past your stop before exit. Use 5m+ timeframes.
-- Kotak response field names (`pTrdSymbol`, `lLotSize`, `nOrdNo`, `ordSt`, `avgPrc`) are parsed defensively. **Do one 1-lot live test** and watch `logs/bot.log`; if the format differs, adjust `broker/kotak_neo.py`.
+- Kotak response field names (`pTrdSymbol`, `pExpiryDate`, `lLotSize`, `nOrdNo`, `ordSt`, `avgPrc`) are parsed defensively. **Do one 1-lot live test** and watch `logs/bot.log`; if the format differs, adjust `broker/kotak_neo.py`.
 - Lot sizes in `config.py` (NIFTY 65, BANKNIFTY 30, FINNIFTY 60) are overridden by Kotak's scrip data when logged in. Check them with the exchange.
 - Paper P&L without Kotak login is an estimate (spot move × 0.5 delta).
 - The PC must stay on and awake during market hours.

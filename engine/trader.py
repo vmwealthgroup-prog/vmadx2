@@ -2,6 +2,7 @@
 import csv
 import datetime as dt
 import logging
+import math
 import os
 import threading
 import time
@@ -187,6 +188,39 @@ class Trader:
             self.enter_position(ev)
 
     # ---------------- orders ----------------
+    def _execute(self, b, symbol: str, token, qty: int, side: str, force_market: bool = False) -> dict:
+        """Place one order and wait for it. LIMIT mode = LTP +/- buffer; unfilled limit orders are cancelled.
+        Returns {"state": filled|dead|unknown, "order_no", "avg_price", "ltp", "status", "reason"}."""
+        s = self.settings
+        live = b is self.kotak
+        ltp = self.kotak.ltp(token) if (token and self.kotak.logged_in) else None
+        price = None
+        if live and not force_market and s["order_type"].upper() == "LIMIT" and ltp:
+            buf = float(s["limit_buffer_pct"]) / 100.0
+            raw = ltp * (1 + buf) if side == "B" else ltp * (1 - buf)
+            price = (math.ceil(raw / 0.05) if side == "B" else math.floor(raw / 0.05)) * 0.05
+            price = max(round(price, 2), 0.05)
+        o = b.place(symbol, qty, side, price)  # raises if the order was never accepted
+        st = b.order_status(o["order_no"], wait_seconds=10)
+        res = {"order_no": o["order_no"], "avg_price": st.get("avg_price"), "ltp": ltp,
+               "status": st["status"], "reason": st.get("reason", ""), "price": price}
+        if not live or st["status"] in ("complete", "completed", "traded"):
+            return {**res, "state": "filled"}
+        if st["status"] in ("rejected", "cancelled"):
+            return {**res, "state": "dead"}
+        if price is not None:  # limit still open -> cancel it, then re-check (it may have filled meanwhile)
+            try:
+                b.cancel(o["order_no"])
+            except Exception as e:  # noqa: BLE001
+                self.event(f"Cancel failed for {o['order_no']}: {e}", "error")
+            st = b.order_status(o["order_no"], wait_seconds=6)
+            res.update(status=st["status"], avg_price=st.get("avg_price"), reason=st.get("reason", ""))
+            if st["status"] in ("complete", "completed", "traded"):
+                return {**res, "state": "filled"}
+            if st["status"] in ("rejected", "cancelled"):
+                return {**res, "state": "dead"}
+        return {**res, "state": "unknown"}
+
     def _strike(self, spot: float, side: str) -> int:
         s = self.settings
         step = config.UNDERLYINGS[s["underlying"]]["step"]
@@ -215,22 +249,21 @@ class Trader:
 
         b = self.broker()
         try:
-            o = b.market_order(symbol, qty, "B", protection=s["market_protection"])
-            st = b.order_status(o["order_no"])
+            r = self._execute(b, symbol, token, qty, "B")
         except Exception as e:  # noqa: BLE001
             return self.event(f"ENTRY ORDER FAILED: {e}", "error")
-        if self.live and st["status"] in ("rejected", "cancelled"):
-            return self.event(f"LIVE entry {st['status']}: {st['reason']}", "error")
-        if self.live and st["status"] not in ("complete", "completed", "traded"):
-            self.event(f"LIVE entry status '{st['status']}' - tracking as open. Verify in Kotak order book!", "error")
+        if r["state"] == "dead":
+            return self.event(f"LIVE entry not filled ({r['status']} {r['reason']}) - no position taken", "error")
+        if r["state"] == "unknown":
+            self.event(f"LIVE entry status '{r['status']}' - tracking as open. Verify in Kotak order book!", "error")
 
-        premium = st.get("avg_price") or (self.kotak.ltp(token) if (token and self.kotak.logged_in) else None)
+        premium = r.get("avg_price") or r.get("ltp")
         stop = ev["low"] if side == "CE" else ev["high"]
         self.position = {
             "side": side, "symbol": symbol, "token": token, "qty": qty, "strike": strike,
             "entry_time": now_ist().strftime("%Y-%m-%d %H:%M:%S"), "entry_underlying": ev["price"],
             "entry_premium": premium, "stop": stop, "initial_stop": stop, "best": ev["price"],
-            "tsl_active": False, "order_no": o["order_no"], "mode": "LIVE" if self.live else "PAPER",
+            "tsl_active": False, "order_no": r["order_no"], "mode": "LIVE" if self.live else "PAPER",
             "ltp_underlying": ev["price"], "ltp_premium": premium, "pnl": 0.0,
         }
         self.day_trades += 1
@@ -259,30 +292,28 @@ class Trader:
                 return {"ok": False, "message": "No open position"}
             live_pos = pos["mode"] == "LIVE"
             b = self.kotak if live_pos else self.paper
-            st, filled = {"status": "complete", "avg_price": None}, False
+            r, filled = {"avg_price": None, "ltp": None}, False
             for attempt in range(3):
-                try:
-                    o = b.market_order(pos["symbol"], pos["qty"], "S", protection=self.settings["market_protection"])
+                try:  # 1st try uses the configured order type, retries go MARKET
+                    r = self._execute(b, pos["symbol"], pos.get("token"), pos["qty"], "S", force_market=attempt > 0)
                 except Exception as e:  # noqa: BLE001  (order never accepted -> safe to retry)
                     self.event(f"EXIT ORDER FAILED (attempt {attempt + 1}): {e}", "error")
                     time.sleep(1)
                     continue
-                st = b.order_status(o["order_no"], wait_seconds=10)
-                if not live_pos or st["status"] in ("complete", "completed", "traded"):
+                if r["state"] == "filled":
                     filled = True
                     break
-                if st["status"] in ("rejected", "cancelled"):
-                    self.event(f"Exit attempt {attempt + 1} {st['status']}: {st.get('reason', '')}", "error")
-                    time.sleep(1)
+                if r["state"] == "dead":
+                    self.event(f"Exit attempt {attempt + 1} {r['status']}: {r['reason']} - retrying", "error")
                     continue
-                break  # pending/unknown: never send a 2nd sell (avoids accidental short)
+                break  # unknown/pending: never send a 2nd sell (avoids accidental short)
             if not filled:
                 self.running = False
                 self.event("!!! LIVE EXIT NOT CONFIRMED - BOT STOPPED. SQUARE OFF MANUALLY IN KOTAK NEO APP !!!", "error")
                 return {"ok": False, "message": "Exit not confirmed - check Kotak Neo app"}
 
             spot = self.last_eval.get("price", pos["ltp_underlying"])
-            exit_prem = st.get("avg_price") or pos.get("ltp_premium")
+            exit_prem = r.get("avg_price") or r.get("ltp") or pos.get("ltp_premium")
             pnl = round(self._pnl(pos, exit_prem, spot), 2)
             trade = {**{k: pos[k] for k in ("mode", "side", "symbol", "qty", "entry_time", "entry_underlying", "entry_premium")},
                      "exit_time": now_ist().strftime("%Y-%m-%d %H:%M:%S"), "exit_underlying": spot,
